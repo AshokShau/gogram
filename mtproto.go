@@ -449,43 +449,9 @@ func (m *MTProto) connect(ctx context.Context) error {
 }
 
 func (m *MTProto) makeRequest(data tl.Object, expectedTypes ...reflect.Type) (any, error) {
-	err := m.tcpState.WaitForActive(context.Background())
-	if err != nil {
-		return nil, errors.Wrap(err, "waiting for TCP active")
-	}
-
-	resp, _, err := m.sendPacket(data, expectedTypes...)
-	if err != nil {
-		if strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "transport is closed") || strings.Contains(err.Error(), "connection was forcibly closed") || strings.Contains(err.Error(), "connection reset by peer") || strings.Contains(err.Error(), "broken pipe") {
-			m.Logger.Info(fmt.Sprintf("connection closed due to broken tcp, reconnecting to [%s] - <%s> ...", m.Addr, utils.Vtcp(m.IpV6)))
-			err = m.Reconnect(false)
-			if err != nil {
-				return nil, errors.Wrap(err, "reconnecting")
-			}
-			return m.makeRequest(data, expectedTypes...)
-		}
-		return nil, errors.Wrap(err, "sending packet")
-	}
-	response := <-resp
-	switch r := response.(type) {
-	case *objects.RpcError:
-		if err := RpcErrorToNative(r).(*ErrResponseCode); strings.Contains(err.Message, "FLOOD_WAIT_") || strings.Contains(err.Message, "FLOOD_PREMIUM_WAIT_") {
-			if done := m.floodHandler(err); !done {
-				return nil, RpcErrorToNative(r)
-			} else {
-				return m.makeRequest(data, expectedTypes...)
-			}
-		}
-		m.errorHandler(RpcErrorToNative(r))
-
-		return nil, RpcErrorToNative(r)
-
-	case *errorSessionConfigsChanged:
-		m.Logger.Debug("session configs changed, resending request")
-		return m.makeRequest(data, expectedTypes...)
-	}
-
-	return tl.UnwrapNativeTypes(response), nil
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	return m.makeRequestCtx(ctx, data, expectedTypes...)
 }
 
 func (m *MTProto) makeRequestCtx(ctx context.Context, data tl.Object, expectedTypes ...reflect.Type) (any, error) {
@@ -509,7 +475,7 @@ func (m *MTProto) makeRequestCtx(ctx context.Context, data tl.Object, expectedTy
 
 	select {
 	case <-ctx.Done():
-		go m.writeRPCResponse(int(msgId), &objects.Null{})
+		m.responseChannels.Delete(int(msgId))
 		return nil, ctx.Err()
 	case response := <-resp:
 		switch r := response.(type) {
