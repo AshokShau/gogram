@@ -77,7 +77,7 @@ func (m *MTProto) sendPacketWithMsgID(request tl.Object, msgID int64, expectedTy
 sendPacket:
 	errorSendPacket := m.transport.WriteMsg(data, seqNo)
 	if errorSendPacket != nil {
-		if maxRetries > 0 && (strings.Contains(errorSendPacket.Error(), "connection was aborted") || strings.Contains(errorSendPacket.Error(), "connection reset")) {
+		if maxRetries > 0 && (strings.Contains(errorSendPacket.Error(), "connection was aborted") || strings.Contains(errorSendPacket.Error(), "connection reset") || strings.Contains(errorSendPacket.Error(), "EOF") || strings.Contains(errorSendPacket.Error(), "broken pipe")) {
 			maxRetries--
 			err := m.CreateConnection(false)
 			if err == nil && m.transport != nil {

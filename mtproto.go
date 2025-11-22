@@ -446,7 +446,10 @@ func (m *MTProto) ExportNewSender(dcID int, mem bool, cdn ...bool) (*MTProto, er
 func (m *MTProto) connectWithRetry(ctx context.Context) error {
 	m.reconnectMutex.Lock()
 	defer m.reconnectMutex.Unlock()
+	return m.connectWithRetryLocked(ctx)
+}
 
+func (m *MTProto) connectWithRetryLocked(ctx context.Context) error {
 	err := m.connect(ctx)
 	if err == nil {
 		m.reconnectAttempts = 0
@@ -495,6 +498,13 @@ func (m *MTProto) CreateConnection(withLog bool) error {
 		return errors.New("mtproto is terminated, cannot create connection")
 	}
 
+	m.reconnectMutex.Lock()
+	defer m.reconnectMutex.Unlock()
+
+	return m.createConnectionLocked(withLog)
+}
+
+func (m *MTProto) createConnectionLocked(withLog bool) error {
 	m.stopRoutines()
 	m.routineswg.Wait()
 
@@ -508,7 +518,7 @@ func (m *MTProto) CreateConnection(withLog bool) error {
 		m.Logger.Debug("connecting to [%s] - <%s> ...", utils.FmtIp(m.Addr), transportType)
 	}
 
-	err := m.connectWithRetry(ctx)
+	err := m.connectWithRetryLocked(ctx)
 	if err != nil {
 		m.Logger.WithError(err).Error("failed to create connection")
 		return err
@@ -772,6 +782,9 @@ func (m *MTProto) makeRequestCtx(ctx context.Context, data tl.Object, expectedTy
 		return nil, fmt.Errorf("request timeout: %w", ctx.Err())
 	case response := <-resp:
 		switch r := response.(type) {
+		case *errConnectionReset:
+			m.Logger.Debug("connection reset, retrying request %s", utils.FmtMethod(data))
+			return m.makeRequestCtx(ctx, data, expectedTypes...)
 		case *objects.RpcError:
 			rpcError := RpcErrorToNative(r, utils.FmtMethod(data)).(*ErrResponseCode)
 
@@ -877,14 +890,37 @@ func (m *MTProto) Reconnect(WithLogs bool) error {
 	if m.terminated.Load() {
 		return nil
 	}
+
+	m.reconnectMutex.Lock()
+	defer m.reconnectMutex.Unlock()
+
+	// debounce reconnections
+	if m.tcpState.GetActive() && time.Since(m.lastSuccessfulConnect) < 2*time.Second {
+		return nil
+	}
+
+	// notify all pending requests that the connection is being reset
+	m.mutex.Lock()
+	respCh := m.responseChannels
+	m.mutex.Unlock()
+
+	if respCh != nil {
+		for _, key := range respCh.Keys() {
+			if ch, ok := respCh.Get(key); ok {
+				select {
+				case ch <- &errConnectionReset{}:
+				default:
+				}
+			}
+		}
+	}
+
 	err := m.Disconnect()
 	if err != nil {
 		return fmt.Errorf("disconnecting: %w", err)
 	}
-	if WithLogs {
-		m.Logger.Info("reconnecting to [%s] - <%s> ...", m.Addr, m.GetTransportType())
-	}
-	err = m.CreateConnection(WithLogs)
+
+	err = m.createConnectionLocked(WithLogs)
 	if err != nil {
 		return fmt.Errorf("recreating connection: %w", err)
 	}
@@ -940,7 +976,6 @@ func (m *MTProto) startReadingResponses(ctx context.Context) {
 		defer m.routineswg.Done()
 
 		var consecutiveErrors int
-		maxConsecutiveErrors := 5
 		baseDelay := 100 * time.Millisecond
 		maxDelay := 2 * time.Second
 		for {
@@ -973,20 +1008,12 @@ func (m *MTProto) startReadingResponses(ctx context.Context) {
 							return
 						}
 
-						err = m.Reconnect(false)
-						if err != nil {
-							m.Logger.WithError(err).Error("reconnecting")
-							if consecutiveErrors >= maxConsecutiveErrors {
-								m.Logger.Error(fmt.Sprintf("max consecutive errors (%d) reached, backing off", maxConsecutiveErrors))
-								select {
-								case <-ctx.Done():
-									return
-								case <-time.After(delay * 2):
-								}
+						go func() {
+							if err := m.Reconnect(false); err != nil {
+								m.Logger.WithError(err).Error("async reconnect failed")
 							}
-						} else {
-							consecutiveErrors = 0
-						}
+						}()
+						return
 					} else if strings.Contains(err.Error(), "required to reconnect") {
 						m.Logger.Debug("network unstable, reconnecting to [%s] - <%s> (attempt %d, backoff %v)...",
 							m.Addr, m.GetTransportType(), consecutiveErrors, delay)
@@ -1001,20 +1028,12 @@ func (m *MTProto) startReadingResponses(ctx context.Context) {
 							return
 						}
 
-						err = m.Reconnect(false)
-						if err != nil {
-							m.Logger.WithError(err).Error("reconnecting")
-							if consecutiveErrors >= maxConsecutiveErrors {
-								m.Logger.Error(fmt.Sprintf("max consecutive errors (%d) reached, backing off", maxConsecutiveErrors))
-								select {
-								case <-ctx.Done():
-									return
-								case <-time.After(delay * 2):
-								}
+						go func() {
+							if err := m.Reconnect(false); err != nil {
+								m.Logger.WithError(err).Error("async reconnect failed")
 							}
-						} else {
-							consecutiveErrors = 0
-						}
+						}()
+						return
 					}
 				} else {
 					consecutiveErrors = 0
@@ -1047,12 +1066,11 @@ func (m *MTProto) startReadingResponses(ctx context.Context) {
 						return
 					}
 
-					err = m.Reconnect(false)
-					if err != nil {
-						m.Logger.WithError(err).Error("reconnecting")
-					} else {
-						consecutiveErrors = 0
-					}
+					go func() {
+						if err := m.Reconnect(false); err != nil {
+							m.Logger.WithError(err).Error("async reconnect failed")
+						}
+					}()
 					return
 				default:
 					switch e := err.(type) {
@@ -1087,12 +1105,12 @@ func (m *MTProto) startReadingResponses(ctx context.Context) {
 							return
 						}
 
-						err = m.Reconnect(false)
-						if err != nil {
-							m.Logger.WithError(err).Error("reconnecting")
-						} else {
-							consecutiveErrors = 0
-						}
+						go func() {
+							if err := m.Reconnect(false); err != nil {
+								m.Logger.WithError(err).Error("async reconnect failed")
+							}
+						}()
+						return
 					} else {
 						return
 					}
@@ -1406,4 +1424,14 @@ func (m *MTProto) offsetTime() {
 	m.timeOffset = timeResponse.Unixtime - currentLocalTime
 	m.genMsgID = utils.NewMsgIDGenerator()
 	m.Logger.Info("system time is out of sync, offsetting time by %d seconds", m.timeOffset)
+}
+
+type errConnectionReset struct{}
+
+func (e *errConnectionReset) CRC() uint32 {
+	return 0
+}
+
+func (e *errConnectionReset) Error() string {
+	return "connection reset"
 }

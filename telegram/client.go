@@ -440,7 +440,7 @@ func (c *Client) Disconnect() error {
 	return c.MTProto.Disconnect()
 }
 
-// switchDC permanently switches the data center
+// SwitchDc permanently switches the data center
 func (c *Client) SwitchDc(dcID int) error {
 	c.Log.Debug("switching to data center %d", dcID)
 	if err := c.MTProto.SwitchDc(dcID); err != nil {
