@@ -1375,9 +1375,12 @@ func initializeWorkers(numWorkers int, dc int32, c *Client, w *WorkerPool) error
 
 	var wg sync.WaitGroup
 	wg.Add(needed)
-	for range needed {
-		go func() {
+	for i := range needed {
+		go func(idx int) {
 			defer wg.Done()
+			if idx > 0 {
+				time.Sleep(time.Duration(idx) * 300 * time.Millisecond)
+			}
 			conn, err := c.CreateExportedSender(context.Background(), int(dc), false, authParams)
 			if err != nil || conn == nil {
 				errMu.Lock()
@@ -1402,7 +1405,7 @@ func initializeWorkers(numWorkers int, dc int32, c *Client, w *WorkerPool) error
 			if readyCh != nil {
 				readyOnce.Do(func() { close(readyCh) })
 			}
-		}()
+		}(i)
 	}
 
 	if numCreate > 0 {
