@@ -380,11 +380,26 @@ PeerSwitch:
 			return &InputPeerSelf{}, nil
 		}
 
-		if peerMap, ok := c.Cache.usernameMap[strings.TrimPrefix(Peer, "@")]; ok {
-			if peerHash, ok := c.Cache.InputPeers.InputChannels[peerMap]; ok {
+		c.Cache.RLock()
+		peerMap, ok := c.Cache.usernameMap[strings.TrimPrefix(Peer, "@")]
+		var peerHash int64
+		var isChannel, isUser bool
+		if ok {
+			if hash, chOk := c.Cache.InputPeers.InputChannels[peerMap]; chOk {
+				peerHash = hash
+				isChannel = true
+			} else if hash, usrOk := c.Cache.InputPeers.InputUsers[peerMap]; usrOk {
+				peerHash = hash
+				isUser = true
+			}
+		}
+		c.Cache.RUnlock()
+
+		if ok {
+			if isChannel {
 				return &InputPeerChannel{ChannelID: peerMap, AccessHash: peerHash}, nil
 			}
-			if peerHash, ok := c.Cache.InputPeers.InputUsers[peerMap]; ok {
+			if isUser {
 				return &InputPeerUser{UserID: peerMap, AccessHash: peerHash}, nil
 			}
 		}
