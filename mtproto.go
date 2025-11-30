@@ -512,6 +512,10 @@ func (m *MTProto) CreateConnection(withLog bool) error {
 	}
 	m.stopRoutines()
 
+	if m.transport != nil {
+		m.transport.Close()
+	}
+
 	ctx, cancelfunc := context.WithCancel(context.Background())
 	m.ctxCancel = cancelfunc
 
@@ -843,6 +847,11 @@ func (m *MTProto) stopRoutines() {
 func (m *MTProto) Disconnect() error {
 	m.tcpState.SetActive(false)
 	m.stopRoutines()
+
+	if m.transport != nil {
+		m.transport.Close()
+		m.transport = nil
+	}
 
 	return nil
 }
