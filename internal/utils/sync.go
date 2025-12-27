@@ -46,6 +46,16 @@ func (s *SyncIntObjectChan) Delete(key int) bool {
 	return ok
 }
 
+func (s *SyncIntObjectChan) Pop(key int) (chan tl.Object, bool) {
+	s.mu.Lock()
+	v, ok := s.m[key]
+	if ok {
+		delete(s.m, key)
+	}
+	s.mu.Unlock()
+	return v, ok
+}
+
 func (s *SyncIntObjectChan) Keys() []int {
 	s.mu.RLock()
 	keys := make([]int, 0, len(s.m))

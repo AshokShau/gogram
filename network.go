@@ -15,8 +15,16 @@ import (
 	"github.com/amarnathcjd/gogram/internal/mtproto/messages"
 	"github.com/amarnathcjd/gogram/internal/mtproto/objects"
 	"github.com/amarnathcjd/gogram/internal/session"
+	"sync"
+
 	"github.com/amarnathcjd/gogram/internal/utils"
 )
+
+var respChannelPool = sync.Pool{
+	New: func() any {
+		return make(chan tl.Object)
+	},
+}
 
 func (m *MTProto) sendPacket(request tl.Object, expectedTypes ...reflect.Type) (chan tl.Object, int64, error) {
 	return m.sendPacketWithMsgID(request, 0, expectedTypes...)
@@ -90,7 +98,7 @@ sendPacket:
 }
 
 func (m *MTProto) writeRPCResponse(msgID int, data tl.Object) error {
-	v, ok := m.responseChannels.Get(msgID)
+	v, ok := m.responseChannels.Pop(msgID)
 	if !ok {
 		return errors.New("no response channel found for messageId " + fmt.Sprint(msgID))
 	}
@@ -99,7 +107,6 @@ func (m *MTProto) writeRPCResponse(msgID int, data tl.Object) error {
 		return fmt.Errorf("sending response: %w", err)
 	}
 
-	m.responseChannels.Delete(msgID)
 	m.expectedTypes.Delete(msgID)
 	return nil
 }
@@ -123,7 +130,7 @@ func (m *MTProto) getRespChannel() chan tl.Object {
 	if m.serviceModeActivated {
 		return m.serviceChannel
 	}
-	return make(chan tl.Object)
+	return respChannelPool.Get().(chan tl.Object)
 }
 
 func isNotContentRelated(t tl.Object) bool {

@@ -1363,3 +1363,10 @@ func NewTcpState() *TcpState {
 		ch: make(chan struct{}),
 	}
 }
+
+func (m *MTProto) recycleRespChannel(ch chan tl.Object) {
+	if m.serviceModeActivated {
+		return
+	}
+	respChannelPool.Put(ch)
+}
